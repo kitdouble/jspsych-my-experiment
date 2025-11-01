@@ -156,7 +156,21 @@
         vars.forEach(entry => {
           const name = typeof entry?.name === "string" ? entry.name.trim() : "";
           if (!name) return;
-          const value = coerceExperimentVariableValue(entry.value);
+
+          let value;
+          if (entry.randomize && typeof entry.value === "string") {
+            // Parse comma-separated values and randomly select one
+            const options = entry.value.split(',').map(v => v.trim()).filter(v => v.length > 0);
+            if (options.length > 0) {
+              const randomIndex = Math.floor(Math.random() * options.length);
+              value = coerceExperimentVariableValue(options[randomIndex]);
+            } else {
+              value = coerceExperimentVariableValue(entry.value);
+            }
+          } else {
+            value = coerceExperimentVariableValue(entry.value);
+          }
+
           try {
             GLOBAL_OBJECT[name] = value;
           } catch (err) {
@@ -664,9 +678,23 @@
         const options = experiment.options ?? {};
         const rawCss = typeof options.rawCss === "string" ? options.rawCss : "";
         const rawJs = typeof options.rawJs === "string" ? options.rawJs : "";
-        const urlParamsRaw = typeof options.urlParams === "string" ? options.urlParams : "";
-        const urlParamNames = urlParamsRaw.split(/[,\s]+/).map(name => name.trim()).filter(Boolean);
         const enforceFullscreen = !!options.fullscreen;
+        const allowMobile = !!options.allowMobile;
+
+        // Check for mobile device
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile && !allowMobile) {
+          document.body.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 2rem; background: #1a1a1a; color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+              <div style="max-width: 500px; text-align: center;">
+                <h1 style="font-size: 1.5rem; margin-bottom: 1rem;">Desktop Required</h1>
+                <p style="color: #aaaaaa; line-height: 1.6;">This experiment requires a desktop or laptop computer. Please access this study from a non-mobile device.</p>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
         applyExperimentVariables(options.variables);
         applyCustomCss(rawCss);
         const { timeline } = compileExperiment(experiment);
@@ -696,13 +724,39 @@
           }
           return undefined;
         };
-        if (urlParamNames.length) {
+        const searchParams = new URLSearchParams(window.location.search);
+        if (searchParams && Array.from(searchParams.keys()).length) {
           const captured = {};
-          urlParamNames.forEach(name => {
-            const value = jsPsych.data.getURLVariable(name);
-            captured[name] = value !== undefined && value !== null ? value : "";
+          searchParams.forEach((value, key) => {
+            if (Object.prototype.hasOwnProperty.call(captured, key)) return;
+            const allValues = searchParams.getAll(key);
+            if (allValues.length > 1) {
+              captured[key] = allValues.join(",");
+            } else {
+              captured[key] = value ?? "";
+            }
           });
-          jsPsych.data.addProperties(captured);
+          if (Object.keys(captured).length) {
+            jsPsych.data.addProperties(captured);
+          }
+        }
+        // Add global variables to data
+        if (Array.isArray(options.variables) && options.variables.length > 0) {
+          const globalVars = {};
+          options.variables.forEach(entry => {
+            const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+            if (!name) return;
+            try {
+              if (Object.prototype.hasOwnProperty.call(GLOBAL_OBJECT, name)) {
+                globalVars[name] = GLOBAL_OBJECT[name];
+              }
+            } catch (err) {
+              // Skip if cannot access
+            }
+          });
+          if (Object.keys(globalVars).length) {
+            jsPsych.data.addProperties(globalVars);
+          }
         }
         if (enforceFullscreen) {
           const OVERLAY_ID = "jspsych-fullscreen-guard";
